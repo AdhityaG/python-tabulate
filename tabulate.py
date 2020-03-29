@@ -182,16 +182,17 @@ def _html_begin_table_without_header(colwidths_ignore, colaligns_ignore):
     return "<table>\n<tbody>"
 
 
-def _html_row_with_attrs(celltag, cell_values, colwidths, colaligns):
+def _html_row_with_attrs(celltag, cell_values, colwidths, colaligns, hrefs):
     alignment = {
         "left": "",
         "right": ' style="text-align: right;"',
         "center": ' style="text-align: center;"',
         "decimal": ' style="text-align: right;"',
     }
+    # hrefs = hrefs[len(hrefs) - len(cell_values):] if celltag == 'td' else hrefs
     values_with_attrs = [
-        "<{0}{1}>{2}</{0}>".format(celltag, alignment.get(a, ""), htmlescape(c))
-        for c, a in zip(cell_values, colaligns)
+        "<{0}{1}>{2}{3}{4}</{0}>".format(celltag, alignment.get(a, ""), h[0], htmlescape(c), h[1])
+        for c, a, h in zip(cell_values, colaligns, hrefs)
     ]
     rowhtml = "<tr>{}</tr>".format("".join(values_with_attrs).rstrip())
     if celltag == "th":  # it's a header row, create a new table header
@@ -1140,6 +1141,7 @@ def tabulate(
     showindex="default",
     disable_numparse=False,
     colalign=None,
+    hyperlinks=(),
 ):
     """Format a fixed width table for pretty printing.
 
@@ -1436,6 +1438,33 @@ def tabulate(
     if tablefmt == "rst":
         list_of_lists, headers = _rst_escape_first_column(list_of_lists, headers)
 
+    if tablefmt == 'html':
+        from collections.abc import Iterable
+        assert isinstance(hyperlinks, Iterable) and not isinstance(hyperlinks, str)
+
+        hyperlinks = list(hyperlinks)
+        hyperlinks += [''] * (len(headers) + sum([len(_) for _ in list_of_lists]) - len(hyperlinks))
+        n_c = len(headers) # number of columns
+        n_r = int(len(hyperlinks) / n_c) # number of rows
+        hrefs = [[['',''] for _ in range(n_c)] for _ in range(n_r)]
+        # convert 'hyperlinks' into a 2D list
+        hyperlinks = [hyperlinks[_: _ + n_c] for _ in range(0, len(hyperlinks), n_c)]
+
+        for row_idx in range(n_r):
+            for col_idx in range(n_c):
+                assert isinstance(hyperlinks[row_idx][col_idx], Iterable) or isinstance(hyperlinks[row_idx][col_idx], str)
+                if hyperlinks[row_idx][col_idx] == '':
+                    pass
+                elif isinstance(hyperlinks[row_idx][col_idx], str):
+                    hrefs[row_idx][col_idx][0] = '<a href="' + hyperlinks[row_idx][col_idx] + '" target="_blank">'
+                    hrefs[row_idx][col_idx][1] = '</a>'
+                elif len(hyperlinks[row_idx][col_idx]) == 1:
+                    hrefs[row_idx][col_idx][0] = '<a href="' + hyperlinks[row_idx][col_idx][0] + '" target="_blank">'
+                    hrefs[row_idx][col_idx][1] = '</a>'
+                elif len(hyperlinks[row_idx][col_idx]) == 2:
+                    hrefs[row_idx][col_idx][0] = '<a href="' + hyperlinks[row_idx][col_idx][0] + '" target="' + hyperlinks[row_idx][col_idx][1] + '">'
+                    hrefs[row_idx][col_idx][1] = '</a>'
+
     # PrettyTable formatting does not use any extra padding.
     # Numbers are not parsed and are treated the same as strings for alignment.
     # Check if pretty is the format being used and override the defaults so it
@@ -1524,7 +1553,7 @@ def tabulate(
     if not isinstance(tablefmt, TableFormat):
         tablefmt = _table_formats.get(tablefmt, _table_formats["simple"])
 
-    return _format_table(tablefmt, headers, rows, minwidths, aligns, is_multiline)
+    return _format_table(tablefmt, headers, rows, minwidths, aligns, is_multiline, hrefs)
 
 
 def _expand_numparse(disable_numparse, column_count):
@@ -1559,23 +1588,23 @@ def _build_simple_row(padded_cells, rowfmt):
     return (begin + sep.join(padded_cells) + end).rstrip()
 
 
-def _build_row(padded_cells, colwidths, colaligns, rowfmt):
+def _build_row(padded_cells, colwidths, colaligns, rowfmt, hrefs):
     "Return a string which represents a row of data cells."
     if not rowfmt:
         return None
     if hasattr(rowfmt, "__call__"):
-        return rowfmt(padded_cells, colwidths, colaligns)
+        return rowfmt(padded_cells, colwidths, colaligns, hrefs)
     else:
         return _build_simple_row(padded_cells, rowfmt)
 
 
-def _append_basic_row(lines, padded_cells, colwidths, colaligns, rowfmt):
-    lines.append(_build_row(padded_cells, colwidths, colaligns, rowfmt))
+def _append_basic_row(lines, padded_cells, colwidths, colaligns, rowfmt, hrefs):
+    lines.append(_build_row(padded_cells, colwidths, colaligns, rowfmt, hrefs))
     return lines
 
 
 def _append_multiline_row(
-    lines, padded_multiline_cells, padded_widths, colaligns, rowfmt, pad
+    lines, padded_multiline_cells, padded_widths, colaligns, rowfmt, pad, hrefs
 ):
     colwidths = [w - 2 * pad for w in padded_widths]
     cells_lines = [c.splitlines() for c in padded_multiline_cells]
@@ -1587,7 +1616,7 @@ def _append_multiline_row(
     lines_cells = [[cl[i] for cl in cells_lines] for i in range(nlines)]
     for ln in lines_cells:
         padded_ln = _pad_row(ln, pad)
-        _append_basic_row(lines, padded_ln, colwidths, colaligns, rowfmt)
+        _append_basic_row(lines, padded_ln, colwidths, colaligns, rowfmt, hrefs)
     return lines
 
 
@@ -1621,7 +1650,7 @@ class JupyterHTMLStr(str):
         return self
 
 
-def _format_table(fmt, headers, rows, colwidths, colaligns, is_multiline):
+def _format_table(fmt, headers, rows, colwidths, colaligns, is_multiline, hrefs):
     """Produce a plain-text representation of the table."""
     lines = []
     hidden = fmt.with_header_hide if (headers and fmt.with_header_hide) else []
@@ -1643,7 +1672,8 @@ def _format_table(fmt, headers, rows, colwidths, colaligns, is_multiline):
         _append_line(lines, padded_widths, colaligns, fmt.lineabove)
 
     if padded_headers:
-        append_row(lines, padded_headers, padded_widths, colaligns, headerrow)
+        append_row(lines, padded_headers, padded_widths, colaligns, headerrow, hrefs[0])
+        del hrefs[0]
         if fmt.linebelowheader and "linebelowheader" not in hidden:
             _append_line(lines, padded_widths, colaligns, fmt.linebelowheader)
 
@@ -1655,8 +1685,8 @@ def _format_table(fmt, headers, rows, colwidths, colaligns, is_multiline):
         # the last row without a line below
         append_row(lines, padded_rows[-1], padded_widths, colaligns, fmt.datarow)
     else:
-        for row in padded_rows:
-            append_row(lines, row, padded_widths, colaligns, fmt.datarow)
+        for row, row_hrefs in zip(padded_rows, hrefs):
+            append_row(lines, row, padded_widths, colaligns, fmt.datarow, row_hrefs)
 
     if fmt.linebelow and "linebelow" not in hidden:
         _append_line(lines, padded_widths, colaligns, fmt.linebelow)
